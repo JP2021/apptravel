@@ -1,0 +1,33 @@
+# Dependências
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Build / cache
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+*.tsbuildinfo
+
+# Ambiente
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.DS_Store
+*.log
+npm-debug.log*
+Thumbs.db
+
+# Android / iOS (gerados)
+*.hprof
+*.apk
+*.aab
+*.ipa
