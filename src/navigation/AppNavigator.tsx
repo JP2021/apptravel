@@ -1,7 +1,7 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Platform } from 'react-native';
+import { Platform, Pressable, Text } from 'react-native';
 import { CreateTripScreen } from '../screens/CreateTripScreen';
 import { MyTripsScreen } from '../screens/MyTripsScreen';
 import { TripTimelineScreen } from '../screens/TripTimelineScreen';
@@ -92,12 +92,32 @@ export function AppNavigator() {
         <Stack.Screen
           name="Timeline"
           component={TripTimelineScreen}
-          options={{
+          options={({ navigation }) => ({
             title: 'Timeline da viagem',
             headerStyle: { backgroundColor: '#060917' },
             headerTintColor: '#F8FAFC',
             headerTitleStyle: { fontWeight: '800' },
-          }}
+            headerBackVisible: true,
+            headerLeft:
+              navigation.canGoBack() ?
+                () => (
+                  <Pressable
+                    onPress={() => navigation.goBack()}
+                    style={({ pressed }) => ({
+                      marginLeft: Platform.OS === 'web' ? 8 : 0,
+                      paddingVertical: 8,
+                      paddingRight: 16,
+                      opacity: pressed ? 0.7 : 1,
+                    })}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  >
+                    <Text style={{ color: '#F8FAFC', fontSize: 16, fontWeight: '600' }}>
+                      ← Voltar
+                    </Text>
+                  </Pressable>
+                )
+              : undefined,
+          })}
         />
       </Stack.Navigator>
     </NavigationContainer>
