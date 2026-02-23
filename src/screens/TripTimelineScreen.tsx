@@ -14,7 +14,7 @@ import {
 import { useTrips } from '../context/TripsContext';
 import { fetchNearbyPlaces, fetchWeather, geocodeAddress } from '../services/contextApi';
 import { DayDetails, DayType, NearbyPlace, RootStackParamList, WeatherData } from '../types';
-import { webCard, webHero } from '../theme/webTheme';
+import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
 
 type TimelineRouteProp = RouteProp<RootStackParamList, 'Timeline'>;
 
@@ -87,7 +87,10 @@ export function TripTimelineScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, webScrollPaddingBottom ? { paddingBottom: webScrollPaddingBottom } : null]}
+    >
       <View style={[styles.hero, isWideWeb && styles.compactCard, webHero]}>
         <Text style={styles.title}>{trip.destination}</Text>
         <Text style={styles.subtitle}>Timeline inteligente com dados reais por dia</Text>

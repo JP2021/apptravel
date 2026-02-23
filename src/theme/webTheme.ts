@@ -65,17 +65,19 @@ export const webTabBar = isWeb
   : {};
 
 /**
- * Na web: root ocupa a viewport visível e esconde overflow do body.
- * 100dvh = altura dinâmica (exclui barra do navegador no celular), assim
- * o conteúdo de baixo fica acessível pelo scroll interno e clicável.
+ * Na web: root ocupa a viewport e esconde overflow do body para evitar
+ * scroll duplo. Altura fixa para o scroll ficar só dentro do app.
  */
 export const webScreen = isWeb
   ? {
-      height: '100dvh' as const,
-      minHeight: '100dvh' as const,
-      maxHeight: '100dvh' as const,
+      height: '100vh' as const,
+      minHeight: '100vh' as const,
+      maxHeight: '100vh' as const,
       overflow: 'hidden' as const,
     }
   : {};
+
+/** Padding extra no final do scroll na web para o footer ficar clicável. */
+export const webScrollPaddingBottom = isWeb ? 80 : 0;
 
 export const isWebPlatform = isWeb;

@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useTrips } from '../context/TripsContext';
 import { RootStackParamList, Trip } from '../types';
-import { webCard, webHero } from '../theme/webTheme';
+import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList>;
 
@@ -54,7 +54,10 @@ export function MyTripsScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, webScrollPaddingBottom ? { paddingBottom: webScrollPaddingBottom } : null]}
+    >
       <View style={[styles.hero, isWideWeb && styles.compactCard, webHero]}>
         <Text style={styles.title}>Minhas viagens</Text>
         <Text style={styles.subtitle}>Linha do tempo inteligente com contexto real por dia.</Text>

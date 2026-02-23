@@ -14,7 +14,7 @@ import {
 import { useTrips } from '../context/TripsContext';
 import { copyAttachmentToUpload } from '../services/uploadStorage';
 import { Attachment, DayActivity, DayDetails, DayType, Trip, TripDay } from '../types';
-import { webCard, webHero } from '../theme/webTheme';
+import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
 
 type FormState = {
   destination: string;
@@ -326,7 +326,10 @@ export function CreateTripScreen() {
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[styles.content, webScrollPaddingBottom ? { paddingBottom: webScrollPaddingBottom } : null]}
+      >
       <View style={[styles.hero, webHero]}>
         <Text style={styles.title}>Studio de Viagens</Text>
         <Text style={styles.subtitle}>
