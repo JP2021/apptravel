@@ -65,14 +65,15 @@ export const webTabBar = isWeb
   : {};
 
 /**
- * Na web: root ocupa exatamente a viewport e esconde overflow do body,
- * evitando scroll duplo e o "puxar e voltar" no celular.
+ * Na web: root ocupa a viewport visível e esconde overflow do body.
+ * 100dvh = altura dinâmica (exclui barra do navegador no celular), assim
+ * o conteúdo de baixo fica acessível pelo scroll interno e clicável.
  */
 export const webScreen = isWeb
   ? {
-      height: '100vh' as const,
-      minHeight: '100vh' as const,
-      maxHeight: '100vh' as const,
+      height: '100dvh' as const,
+      minHeight: '100dvh' as const,
+      maxHeight: '100dvh' as const,
       overflow: 'hidden' as const,
     }
   : {};
