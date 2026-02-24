@@ -8,7 +8,6 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const EXTRACT_CACHE_PREFIX = 'travel_extract_';
-const EXTRACT_PDF_API_URL_DEFAULT = 'http://localhost:3001';
 
 export type AttachmentInput = {
   uri: string;
@@ -18,7 +17,12 @@ export type AttachmentInput = {
 
 function getExtractPdfApiUrl(): string {
   const url = process.env.EXPO_PUBLIC_EXTRACT_PDF_API_URL;
-  return (url && url.trim()) || EXTRACT_PDF_API_URL_DEFAULT;
+  if (!url || !url.trim()) {
+    throw new Error(
+      'Defina EXPO_PUBLIC_EXTRACT_PDF_API_URL no .env (ex.: http://localhost:3001/extract-pdf).',
+    );
+  }
+  return url.trim().replace(/\/$/, '');
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -56,7 +60,6 @@ async function getExtractedCache(att: AttachmentInput): Promise<string | null> {
 
 /**
  * Extrai texto de um arquivo. Suporta .txt em todas as plataformas e .pdf via API (sem carregar PDF na página).
- * Para PDF é usada a API em pdf-api (rode: cd pdf-api && npm install && npm start).
  */
 export async function extractTextFromFile(att: AttachmentInput): Promise<string> {
   const name = (att.name || '').toLowerCase();
@@ -104,7 +107,7 @@ async function getPdfBase64(uri: string): Promise<string> {
 async function extractPdfViaApi(att: AttachmentInput): Promise<string> {
   try {
     const base64 = await getPdfBase64(att.uri);
-    const apiUrl = getExtractPdfApiUrl().replace(/\/$/, '') + '/extract-pdf';
+    const apiUrl = getExtractPdfApiUrl();
     const res = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -120,14 +123,14 @@ async function extractPdfViaApi(att: AttachmentInput): Promise<string> {
       } catch {
         if (errBody) msg = errBody.slice(0, 200);
       }
-      return `[Erro ao extrair PDF: ${msg}. Rode a API: cd pdf-api && npm install && npm start]`;
+      return `[Erro ao extrair PDF: ${msg}. Verifique a URL em EXPO_PUBLIC_EXTRACT_PDF_API_URL e se a API está rodando.]`;
     }
     const data = (await res.json()) as { text?: string };
     const text = (data?.text || '').trim() || '[Nenhum texto extraído do PDF.]';
     return text;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return `[Erro ao extrair PDF: ${msg}. Verifique se a API está rodando: cd pdf-api && npm install && npm start]`;
+    return `[Erro ao extrair PDF: ${msg}. Verifique se a API está rodando e se EXPO_PUBLIC_EXTRACT_PDF_API_URL está configurada corretamente.]`;
   }
 }
 
