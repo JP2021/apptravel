@@ -1,6 +1,8 @@
 /**
  * API que extrai texto de PDF (mesmo projeto, roda com npm run dev).
- * Endpoint: POST /extract-pdf  body: { pdfBase64: "..." }  → { text: "..." }
+ * Endpoint principal:
+ *   POST /extract-pdf  body: { pdfBase64: "..." }  → { text: "..." }
+ * (comentário apenas informativo; não altera o comportamento do código)
  */
 
 const express = require('express');
@@ -8,7 +10,14 @@ const cors = require('cors');
 const pdfParse = require('pdf-parse');
 
 const app = express();
-const PORT = process.env.PDF_API_PORT || process.env.PORT || 3001;
+
+const rawPort = process.env.PDF_API_PORT || process.env.PORT;
+if (!rawPort) {
+  throw new Error(
+    'Defina PDF_API_PORT (ou PORT) no .env para indicar em qual porta a API deve rodar.',
+  );
+}
+const PORT = Number(rawPort);
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
