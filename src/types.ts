@@ -24,8 +24,14 @@ export type DayDetails = {
   airline?: string;
   flightNumber?: string;
   terminalGate?: string;
+  /** Codigo IATA / cidade de origem (ex: GRU) */
   departure?: string;
+  /** Codigo IATA / cidade de destino (ex: FCO) */
   arrival?: string;
+  /** Data de saída do voo (AAAA-MM-DD), se diferente da data do dia */
+  departureDate?: string;
+  /** Data de chegada do voo (AAAA-MM-DD), pode ser no dia seguinte */
+  arrivalDate?: string;
   hotelName?: string;
   checkIn?: string;
   checkOut?: string;

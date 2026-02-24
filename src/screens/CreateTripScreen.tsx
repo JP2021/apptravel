@@ -1,5 +1,5 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -11,9 +11,13 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { TravelAssistantChat } from '../components/TravelAssistantChat';
 import { useTrips } from '../context/TripsContext';
 import { copyAttachmentToUpload } from '../services/uploadStorage';
+import type { TripFormSnapshot } from '../services/travelAgent';
+import { hasOpenAIKey } from '../services/travelAgent';
 import { Attachment, DayActivity, DayDetails, DayType, Trip, TripDay } from '../types';
+import { normalizeDateOnly } from '../utils/dateUtils';
 import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
 
 type FormState = {
@@ -56,12 +60,90 @@ const initialForm: FormState = {
   days: [createEmptyDay()],
 };
 
+function applyAgentUpdates(prev: FormState, updates: TripFormSnapshot): FormState {
+  const next: FormState = { ...prev };
+  if (updates.destination !== undefined) next.destination = updates.destination;
+  if (updates.startDate !== undefined) next.startDate = normalizeDateOnly(updates.startDate);
+  if (updates.endDate !== undefined) next.endDate = normalizeDateOnly(updates.endDate);
+  if (updates.days !== undefined && updates.days.length > 0) {
+    const mapped = updates.days.map((d, i) => {
+      let acts = (d.activities ?? []).map((a, j) => ({
+        id: `temp-activity-${Date.now()}-${i}-${j}`,
+        title: a.title ?? '',
+        time: a.time ?? '',
+        location: a.location ?? '',
+      }));
+      if (acts.length === 0 && (d.title?.trim() || d.time?.trim() || d.location?.trim())) {
+        acts = [
+          {
+            id: `temp-activity-${Date.now()}-${i}-0`,
+            title: d.title ?? '',
+            time: d.time ?? '',
+            location: d.location ?? '',
+          },
+        ];
+      }
+      return {
+        id: prev.days[i]?.id ?? `temp-day-${Date.now()}-${i}`,
+        date: normalizeDateOnly(d.date) || '',
+        type: d.type ?? 'atividade',
+        title: d.title ?? '',
+        time: d.time ?? '',
+        location: d.location ?? '',
+        notes: d.notes ?? '',
+        details: (d.details as DayDetails) ?? {},
+        activities: acts.length ? acts : [createEmptyActivity(1)],
+        checklistText: (d.checklistItems ?? []).join(', '),
+        attachments: prev.days[i]?.attachments ?? [],
+      };
+    });
+    next.days = mapped.length ? mapped : [createEmptyDay()];
+  }
+  return next;
+}
+
+function formToSnapshot(form: FormState): TripFormSnapshot {
+  return {
+    destination: form.destination || undefined,
+    startDate: form.startDate || undefined,
+    endDate: form.endDate || undefined,
+    days: form.days
+      .filter((d) => d.date.trim() || d.title.trim())
+      .map((d) => ({
+        date: d.date,
+        type: d.type,
+        title: d.title || undefined,
+        time: d.time || undefined,
+        location: d.location || undefined,
+        notes: d.notes || undefined,
+        details: Object.keys(d.details ?? {}).length ? (d.details as Record<string, string>) : undefined,
+        activities: d.activities?.map((a) => ({
+          title: a.title || undefined,
+          time: a.time || undefined,
+          location: a.location || undefined,
+        })),
+        checklistItems: d.checklistText ? d.checklistText.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+      })),
+  };
+}
+
 export function CreateTripScreen() {
   const { width } = useWindowDimensions();
   const isWebWide = width >= 980;
   const { trips, addTrip, updateTrip, deleteTrip } = useTrips();
   const [form, setForm] = useState<FormState>(initialForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'assistant' | 'form'>(() => (hasOpenAIKey() ? 'assistant' : 'form'));
+  const formSnapshot = useMemo(() => formToSnapshot(form), [form]);
+  const pendingSaveFromAssistant = useRef(false);
+
+  useEffect(() => {
+    if (viewMode === 'form' && pendingSaveFromAssistant.current && form.destination.trim()) {
+      pendingSaveFromAssistant.current = false;
+      const timer = setTimeout(() => saveTrip(), 150);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode, form.destination, form.days]);
 
   const notify = (title: string, message: string) => {
     if (Platform.OS === 'web') {
@@ -251,18 +333,19 @@ export function CreateTripScreen() {
       return;
     }
 
-    const hasInvalidDay = filledDays.some((day) => !day.title.trim() || !day.date.trim());
-    if (hasInvalidDay) {
-      notify(
-        'Cadastro incompleto',
-        'Cada dia preenchido precisa ter pelo menos data e titulo.',
-      );
+    const daysWithoutDate = filledDays.filter((day) => !day.date.trim());
+    if (daysWithoutDate.length > 0) {
+      const names = daysWithoutDate.map((d) => d.title?.trim() || d.activities?.[0]?.title?.trim() || 'Dia sem título').filter(Boolean);
+      const msg = names.length
+        ? `Falta a data nestes passeios/dias: ${names.join(', ')}. Preencha a data no formulário ou peça ao assistente: "Qual a data do passeio [nome]?"`
+        : 'Cada dia preenchido precisa ter pelo menos a data. Preencha a data ou peça ao assistente.';
+      notify('Cadastro incompleto', msg);
       return;
     }
 
     const orderedDays = [...filledDays].sort((a, b) => a.date.localeCompare(b.date));
-    const startDate = form.startDate || orderedDays[0]?.date || '';
-    const endDate = form.endDate || orderedDays[orderedDays.length - 1]?.date || '';
+    const startDate = normalizeDateOnly(form.startDate || orderedDays[0]?.date || '');
+    const endDate = normalizeDateOnly(form.endDate || orderedDays[orderedDays.length - 1]?.date || '');
 
     const trip: Trip = {
       id: editingId ?? `${Date.now()}`,
@@ -271,9 +354,9 @@ export function CreateTripScreen() {
       endDate,
       days: orderedDays.map((day) => ({
         id: day.id,
-        date: day.date,
+        date: normalizeDateOnly(day.date) || day.date,
         type: day.type,
-        title: day.title,
+        title: (day.title && day.title.trim()) ? day.title.trim() : dayTypeLabel(day.type),
         time: day.time,
         location: day.location,
         notes: day.notes,
@@ -325,6 +408,40 @@ export function CreateTripScreen() {
     ]);
   };
 
+  if (viewMode === 'assistant') {
+    return (
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[styles.content, webScrollPaddingBottom ? { paddingBottom: webScrollPaddingBottom } : null]}
+      >
+        <View style={[styles.hero, webHero]}>
+          <Text style={styles.title}>Studio de Viagens</Text>
+          <Text style={styles.subtitle}>
+            Preencha sua viagem com o assistente especialista em viagens. Ele faz as perguntas e o cadastro avança sozinho.
+          </Text>
+        </View>
+        <TravelAssistantChat
+          formSnapshot={formSnapshot}
+          days={form.days.map((d) => ({
+            id: d.id,
+            date: d.date,
+            title: d.title,
+            attachments: d.attachments.map((a) => ({ name: a.name, uri: a.uri, mimeType: a.mimeType })),
+          }))}
+          onFormUpdates={(updates) => setForm((prev) => applyAgentUpdates(prev, updates))}
+          onDone={(finalSnapshot) => {
+            if (finalSnapshot) setForm((prev) => applyAgentUpdates(prev, finalSnapshot));
+            pendingSaveFromAssistant.current = true;
+            setViewMode('form');
+          }}
+          onSwitchToForm={() => setViewMode('form')}
+          onAttachVoucher={(dayId) => void pickAttachment(dayId)}
+          onRemoveAttachment={removeAttachment}
+        />
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView
         style={styles.screen}
@@ -336,6 +453,12 @@ export function CreateTripScreen() {
           Cadastro completo com edicao, exclusao e roteiro por dias dinamicos.
         </Text>
       </View>
+
+      {hasOpenAIKey() ? (
+        <Pressable style={[styles.assistantChip, webCard]} onPress={() => setViewMode('assistant')}>
+          <Text style={styles.assistantChipText}>Preencher com Assistente IA (especialista em viagens)</Text>
+        </Pressable>
+      ) : null}
 
       <View style={isWebWide ? styles.gridWrap : undefined}>
         <View style={[styles.formCard, isWebWide && styles.formCardWide, webCard]}>
@@ -397,7 +520,9 @@ export function CreateTripScreen() {
               </View>
 
               <Field
-                label="Data"
+                label={
+                  day.type === 'voo' ? 'Data principal do voo (AAAA-MM-DD)' : 'Data'
+                }
                 value={day.date}
                 onChangeText={(value) => updateDay(day.id, { date: value })}
                 placeholder="2026-06-14"
@@ -436,6 +561,24 @@ export function CreateTripScreen() {
                     onChangeText={(value) => updateDayDetail(day.id, 'terminalGate', value)}
                     placeholder="Ex: T3 • B12"
                   />
+                  <View style={styles.row2}>
+                    <View style={styles.flex1}>
+                      <Field
+                        label="Data de saída (AAAA-MM-DD)"
+                        value={day.details?.departureDate ?? ''}
+                        onChangeText={(value) => updateDayDetail(day.id, 'departureDate', value)}
+                        placeholder="Ex: 2026-06-14"
+                      />
+                    </View>
+                    <View style={styles.flex1}>
+                      <Field
+                        label="Data de chegada (pode ser no dia seguinte)"
+                        value={day.details?.arrivalDate ?? ''}
+                        onChangeText={(value) => updateDayDetail(day.id, 'arrivalDate', value)}
+                        placeholder="Ex: 2026-06-15"
+                      />
+                    </View>
+                  </View>
                   <View style={styles.row2}>
                     <View style={styles.flex1}>
                       <Field
@@ -974,5 +1117,17 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontWeight: '700',
     fontSize: 12,
+  },
+  assistantChip: {
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#2A4778',
+    backgroundColor: '#0E1C37',
+  },
+  assistantChipText: {
+    color: '#60A5FA',
+    fontWeight: '700',
+    fontSize: 14,
   },
 });

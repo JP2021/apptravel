@@ -14,6 +14,7 @@ import {
 import { useTrips } from '../context/TripsContext';
 import { fetchNearbyPlaces, fetchWeather, geocodeAddress } from '../services/contextApi';
 import { DayDetails, DayType, NearbyPlace, RootStackParamList, WeatherData } from '../types';
+import { normalizeDateOnly } from '../utils/dateUtils';
 import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
 
 type TimelineRouteProp = RouteProp<RootStackParamList, 'Timeline'>;
@@ -25,7 +26,8 @@ export function TripTimelineScreen() {
   const { getTripById } = useTrips();
   const trip = getTripById(route.params.tripId);
   const [weather, setWeather] = useState<WeatherData | null>(null);
-  const [places, setPlaces] = useState<NearbyPlace[]>([]);
+  const [placesNearHotel, setPlacesNearHotel] = useState<NearbyPlace[] | null>(null);
+  const [placesByPasseio, setPlacesByPasseio] = useState<Array<{ title: string; location: string; places: NearbyPlace[] }>>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,24 +39,52 @@ export function TripTimelineScreen() {
       try {
         setLoading(true);
         setError(null);
-        const geoTarget =
+        setPlacesNearHotel(null);
+        setPlacesByPasseio([]);
+
+        const mainLocation =
           trip.days.find((day) => day.type === 'hotel' && day.location)?.location ??
-          trip.days.find((day) => day.location)?.location;
-        if (!geoTarget) {
-          setError('Nenhum endereco encontrado nos dias para buscar contexto.');
+          trip.days.find((day) => day.location)?.location ??
+          trip.destination;
+        const mainCoords = await geocodeAddress(
+          typeof mainLocation === 'string' ? mainLocation : '',
+          trip.destination,
+        );
+        if (!mainCoords) {
+          setError('Nao foi possivel localizar o destino. Tente ajustar local ou destino.');
+          setLoading(false);
           return;
         }
-        const coords = await geocodeAddress(geoTarget, trip.destination);
-        if (!coords) {
-          setError('Nao foi possivel localizar o endereco principal. Tente ajustar local ou destino.');
-          return;
-        }
-        const [weatherData, nearby] = await Promise.all([
-          fetchWeather(coords.lat, coords.lon),
-          fetchNearbyPlaces(coords.lat, coords.lon),
+        setWeather(await fetchWeather(mainCoords.lat, mainCoords.lon));
+
+        const hotelDay = trip.days.find((day) => day.type === 'hotel' && day.location);
+        const hotelLocation = hotelDay?.location;
+        const passeios = trip.days.flatMap((day) =>
+          (day.activities ?? [])
+            .filter((a) => a.location?.trim())
+            .map((a) => ({ title: a.title || 'Passeio', location: a.location!.trim() })),
+        );
+        const passeiosUnicos = Array.from(
+          new Map(passeios.map((p) => [`${p.title}|${p.location}`, p])).values(),
+        );
+
+        const results = await Promise.all([
+          hotelLocation
+            ? geocodeAddress(hotelLocation, trip.destination).then((c) =>
+                c ? fetchNearbyPlaces(c.lat, c.lon) : Promise.resolve([]),
+              )
+            : Promise.resolve([]),
+          ...passeiosUnicos.map((p) =>
+            geocodeAddress(p.location, trip.destination).then((c) =>
+              c ? fetchNearbyPlaces(c.lat, c.lon).then((places) => ({ ...p, places })) : Promise.resolve({ ...p, places: [] as NearbyPlace[] }),
+            ),
+          ),
         ]);
-        setWeather(weatherData);
-        setPlaces(nearby);
+
+        const hotelPlaces = results[0] as NearbyPlace[];
+        const passeioPlaces = results.slice(1) as Array<{ title: string; location: string; places: NearbyPlace[] }>;
+        if (hotelPlaces.length) setPlacesNearHotel(hotelPlaces);
+        if (passeioPlaces.length) setPlacesByPasseio(passeioPlaces.filter((x) => x.places.length > 0));
       } catch {
         setError('Falha ao carregar dados reais de clima e arredores.');
       } finally {
@@ -107,7 +137,7 @@ export function TripTimelineScreen() {
           </View>
           <View style={[styles.card, isWideWeb && styles.compactCard, webCard]}>
             <Row label="Titulo" value={day.title || '-'} />
-            <Row label="Data" value={day.date || '-'} />
+            <Row label="Data" value={normalizeDateOnly(day.date) || day.date || '-'} />
             <Row label="Horario" value={day.time || '-'} />
             <Row label="Local" value={day.location || '-'} />
             <Row label="Notas" value={day.notes || '-'} />
@@ -193,26 +223,40 @@ export function TripTimelineScreen() {
             <Text style={styles.metaText}>Sem dados de clima.</Text>
           )}
         </View>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Lugares proximos</Text>
-          {loading ? (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color="#60A5FA" />
-              <Text style={styles.metaText}>Buscando pontos no OpenStreetMap...</Text>
-            </View>
-          ) : places.length ? (
-            places.map((place) => (
-              <View key={`${place.name}-${place.distanceKm}`} style={styles.placeItem}>
+        {placesNearHotel && placesNearHotel.length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Pontos turisticos proximos ao hotel</Text>
+            {placesNearHotel.map((place) => (
+              <View key={`hotel-${place.name}-${place.distanceKm}`} style={styles.placeItem}>
                 <Text style={styles.placeName}>{place.name}</Text>
                 <Text style={styles.metaText}>
                   {place.distanceKm.toFixed(1)} km • {place.category}
                 </Text>
               </View>
-            ))
-          ) : (
-            <Text style={styles.metaText}>Sem lugares encontrados.</Text>
-          )}
-        </View>
+            ))}
+          </View>
+        ) : null}
+        {placesByPasseio.map((item, idx) => (
+          <View key={`passeio-${idx}-${item.title}`} style={styles.section}>
+            <Text style={styles.sectionTitle}>Proximos ao passeio: {item.title}</Text>
+            {item.places.map((place) => (
+              <View key={`${item.title}-${place.name}-${place.distanceKm}`} style={styles.placeItem}>
+                <Text style={styles.placeName}>{place.name}</Text>
+                <Text style={styles.metaText}>
+                  {place.distanceKm.toFixed(1)} km • {place.category}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ))}
+        {!loading && !placesNearHotel?.length && !placesByPasseio.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Lugares proximos</Text>
+            <Text style={styles.metaText}>
+              Adicione o endereco do hotel ou de um passeio para ver pontos turisticos por proximidade.
+            </Text>
+          </View>
+        ) : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
       </View>
     </ScrollView>
@@ -229,11 +273,11 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 function extractDay(dateText: string) {
-  const date = new Date(dateText);
-  if (Number.isNaN(date.getTime())) {
-    return '--';
-  }
-  return String(date.getDate());
+  const normalized = normalizeDateOnly(dateText);
+  if (!normalized) return '--';
+  const parts = normalized.split('-');
+  if (parts.length !== 3) return '--';
+  return parts[2] || '--';
 }
 
 function renderTypedDetails(type: DayType, details?: DayDetails) {
@@ -248,6 +292,8 @@ function renderTypedDetails(type: DayType, details?: DayDetails) {
         <Row label="Companhia" value={details.airline || '-'} />
         <Row label="Numero voo" value={details.flightNumber || '-'} />
         <Row label="Terminal / portao" value={details.terminalGate || '-'} />
+        <Row label="Data de saída" value={details.departureDate || '-'} />
+        <Row label="Data de chegada" value={details.arrivalDate || '-'} />
         <Row label="Origem" value={details.departure || '-'} />
         <Row label="Destino" value={details.arrival || '-'} />
       </View>

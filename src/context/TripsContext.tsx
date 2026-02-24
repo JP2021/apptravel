@@ -8,6 +8,7 @@ import {
   setMockSeedVersion,
 } from '../services/tripStorage';
 import { Attachment, DayDetails, Trip, TripDay } from '../types';
+import { normalizeDateOnly } from '../utils/dateUtils';
 
 const CURRENT_MOCK_VERSION = 'mock-v2-4days';
 
@@ -87,17 +88,19 @@ export function useTrips() {
 
 function normalizeTrip(trip: any): Trip {
   if (Array.isArray(trip.days)) {
+    const days = trip.days.map((day: TripDay) => ({
+      ...day,
+      date: normalizeDateOnly(day.date) || day.date,
+      details: (day.details ?? {}) as DayDetails,
+      activities: Array.isArray(day.activities) ? day.activities : [],
+      attachments: Array.isArray(day.attachments) ? day.attachments : [],
+      checklistItems: Array.isArray(day.checklistItems) ? day.checklistItems : [],
+    }));
     return {
       ...trip,
-      days: trip.days.map((day: TripDay) => ({
-        ...day,
-        details: (day.details ?? {}) as DayDetails,
-        activities: Array.isArray(day.activities) ? day.activities : [],
-        attachments: Array.isArray(day.attachments) ? day.attachments : [],
-        checklistItems: Array.isArray(day.checklistItems) ? day.checklistItems : [],
-      })),
-      startDate: trip.startDate ?? trip.days[0]?.date ?? '',
-      endDate: trip.endDate ?? trip.days[trip.days.length - 1]?.date ?? '',
+      days,
+      startDate: (normalizeDateOnly(trip.startDate ?? trip.days[0]?.date ?? '') || (trip.startDate ?? trip.days[0]?.date ?? '')),
+      endDate: (normalizeDateOnly(trip.endDate ?? trip.days[trip.days.length - 1]?.date ?? '') || (trip.endDate ?? trip.days[trip.days.length - 1]?.date ?? '')),
       updatedAt: trip.updatedAt ?? trip.createdAt ?? new Date().toISOString(),
     };
   }
@@ -106,7 +109,7 @@ function normalizeTrip(trip: any): Trip {
   if (trip.flightDate || trip.flightCompany || trip.flightTime || trip.airportAddress) {
     legacyDays.push({
       id: `legacy-flight-${trip.id}`,
-      date: trip.flightDate ?? '',
+      date: (normalizeDateOnly(trip.flightDate ?? '') || trip.flightDate) ?? '',
       type: 'voo',
       title: trip.flightCompany || 'Voo',
       time: trip.flightTime || '',
@@ -124,7 +127,7 @@ function normalizeTrip(trip: any): Trip {
   if (trip.hotelDate || trip.hotelName || trip.hotelAddress) {
     legacyDays.push({
       id: `legacy-hotel-${trip.id}`,
-      date: trip.hotelDate ?? '',
+      date: (normalizeDateOnly(trip.hotelDate ?? '') || trip.hotelDate) ?? '',
       type: 'hotel',
       title: trip.hotelName || 'Hotel',
       time: trip.hotelCheckInTime || '',
@@ -143,8 +146,8 @@ function normalizeTrip(trip: any): Trip {
   return {
     id: trip.id ?? `${Date.now()}`,
     destination: trip.destination ?? 'Sem destino',
-    startDate: trip.flightDate ?? legacyDays[0]?.date ?? '',
-    endDate: trip.hotelDate ?? legacyDays[legacyDays.length - 1]?.date ?? '',
+    startDate: (normalizeDateOnly(trip.flightDate ?? legacyDays[0]?.date ?? '') || (trip.flightDate ?? legacyDays[0]?.date ?? '')),
+    endDate: (normalizeDateOnly(trip.hotelDate ?? legacyDays[legacyDays.length - 1]?.date ?? '') || (trip.hotelDate ?? legacyDays[legacyDays.length - 1]?.date ?? '')),
     days: legacyDays,
     createdAt: trip.createdAt ?? new Date().toISOString(),
     updatedAt: trip.updatedAt ?? trip.createdAt ?? new Date().toISOString(),
