@@ -8,7 +8,7 @@ const cors = require('cors');
 const pdfParse = require('pdf-parse');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PDF_API_PORT || process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
