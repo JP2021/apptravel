@@ -2,8 +2,10 @@
  * API que extrai texto de PDF (mesmo projeto, roda com npm run dev).
  * Endpoint principal:
  *   POST /extract-pdf  body: { pdfBase64: "..." }  → { text: "..." }
- * (comentário apenas informativo; não altera o comportamento do código)
  */
+
+// Carrega variáveis do arquivo .env na raiz (para PDF_API_PORT, etc.)
+require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
 
 const express = require('express');
 const cors = require('cors');
