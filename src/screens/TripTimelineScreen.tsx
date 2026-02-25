@@ -46,26 +46,56 @@ export function TripTimelineScreen() {
           trip.days.find((day) => day.type === 'hotel' && day.location)?.location ??
           trip.days.find((day) => day.location)?.location ??
           trip.destination;
+        const mainLocationForGeocode =
+          typeof mainLocation === 'string' && mainLocation.includes(' - ')
+            ? (mainLocation.split(' - ').pop()?.trim() || mainLocation)
+            : mainLocation;
         const mainCoords = await geocodeAddress(
-          typeof mainLocation === 'string' ? mainLocation : '',
-          trip.destination,
+          typeof mainLocationForGeocode === 'string' ? mainLocationForGeocode : '',
+          typeof trip.destination === 'string' ? trip.destination : undefined,
         );
-        if (!mainCoords) {
-          setError('Nao foi possivel localizar o destino. Tente ajustar local ou destino.');
-          setLoading(false);
-          return;
+        if (mainCoords) {
+          setWeather(await fetchWeather(mainCoords.lat, mainCoords.lon));
+        } else {
+          setError('Clima: nao foi possivel localizar o destino. Lugares proximos podem aparecer abaixo.');
         }
-        setWeather(await fetchWeather(mainCoords.lat, mainCoords.lon));
 
-        const hotelDay = trip.days.find((day) => day.type === 'hotel' && day.location);
-        const hotelLocation = hotelDay?.location;
-        const passeios = trip.days.flatMap((day) =>
+        const hotelDay = trip.days.find((day) => day.type === 'hotel' && (day.location || (day.details as Record<string, string>)?.hotelName || day.title));
+        let hotelLocationRaw =
+          hotelDay?.location ||
+          (hotelDay?.details as Record<string, string>)?.hotelAddress ||
+          (hotelDay?.details as Record<string, string>)?.hotelName ||
+          hotelDay?.title;
+        if (!hotelLocationRaw) {
+          const dayWithHotel = trip.days.find(
+            (day) =>
+              (day.location?.toLowerCase().includes('hotel') ||
+                (day.details as Record<string, string>)?.destination?.toLowerCase().includes('hotel') ||
+                day.title?.toLowerCase().includes('hotel')) &&
+              (day.location?.trim() || day.title?.trim()),
+          );
+          hotelLocationRaw = dayWithHotel?.location || (dayWithHotel?.details as Record<string, string>)?.destination || dayWithHotel?.title;
+        }
+        const hotelLocation =
+          hotelLocationRaw && trip.destination && !String(hotelLocationRaw).includes(',')
+            ? `${hotelLocationRaw}, ${trip.destination}`
+            : hotelLocationRaw;
+
+        const passeiosFromActivities = trip.days.flatMap((day) =>
           (day.activities ?? [])
             .filter((a) => a.location?.trim())
             .map((a) => ({ title: a.title || 'Passeio', location: a.location!.trim() })),
         );
-        const passeiosUnicos = Array.from(
-          new Map(passeios.map((p) => [`${p.title}|${p.location}`, p])).values(),
+        const passeiosFromDays = trip.days
+          .filter(
+            (day) =>
+              (day.type === 'atividade' || day.type === 'logistica') && day.location?.trim() && day.title?.trim(),
+          )
+          .map((day) => ({ title: day.title!, location: day.location!.trim() }));
+        const passeios = Array.from(
+          new Map(
+            [...passeiosFromActivities, ...passeiosFromDays].map((p) => [`${p.title}|${p.location}`, p]),
+          ).values(),
         );
 
         const results = await Promise.all([
@@ -74,7 +104,7 @@ export function TripTimelineScreen() {
                 c ? fetchNearbyPlaces(c.lat, c.lon) : Promise.resolve([]),
               )
             : Promise.resolve([]),
-          ...passeiosUnicos.map((p) =>
+          ...passeios.map((p) =>
             geocodeAddress(p.location, trip.destination).then((c) =>
               c ? fetchNearbyPlaces(c.lat, c.lon).then((places) => ({ ...p, places })) : Promise.resolve({ ...p, places: [] as NearbyPlace[] }),
             ),

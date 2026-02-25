@@ -1,5 +1,5 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -11,11 +11,11 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { TravelAssistantChat } from '../components/TravelAssistantChat';
 import { useTrips } from '../context/TripsContext';
 import { copyAttachmentToUpload } from '../services/uploadStorage';
 import type { TripFormSnapshot } from '../services/travelAgent';
-import { hasOpenAIKey } from '../services/travelAgent';
+import { buildTripFromAttachments, hasOpenAIKey } from '../services/travelAgent';
+import { extractTextFromAllAttachments } from '../services/fileExtract';
 import { Attachment, DayActivity, DayDetails, DayType, Trip, TripDay } from '../types';
 import { normalizeDateOnly } from '../utils/dateUtils';
 import { webCard, webHero, webScrollPaddingBottom } from '../theme/webTheme';
@@ -133,17 +133,14 @@ export function CreateTripScreen() {
   const { trips, addTrip, updateTrip, deleteTrip } = useTrips();
   const [form, setForm] = useState<FormState>(initialForm);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'assistant' | 'form'>(() => (hasOpenAIKey() ? 'assistant' : 'form'));
+  const [bulkAttachments, setBulkAttachments] = useState<Attachment[]>([]);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [aiLogs, setAiLogs] = useState<string[]>([]);
   const formSnapshot = useMemo(() => formToSnapshot(form), [form]);
-  const pendingSaveFromAssistant = useRef(false);
 
-  useEffect(() => {
-    if (viewMode === 'form' && pendingSaveFromAssistant.current && form.destination.trim()) {
-      pendingSaveFromAssistant.current = false;
-      const timer = setTimeout(() => saveTrip(), 150);
-      return () => clearTimeout(timer);
-    }
-  }, [viewMode, form.destination, form.days]);
+  const addLog = (msg: string) => {
+    setAiLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
 
   const notify = (title: string, message: string) => {
     if (Platform.OS === 'web') {
@@ -408,39 +405,145 @@ export function CreateTripScreen() {
     ]);
   };
 
-  if (viewMode === 'assistant') {
-    return (
-      <ScrollView
-        style={styles.screen}
-        contentContainerStyle={[styles.content, webScrollPaddingBottom ? { paddingBottom: webScrollPaddingBottom } : null]}
-      >
-        <View style={[styles.hero, webHero]}>
-          <Text style={styles.title}>Studio de Viagens</Text>
-          <Text style={styles.subtitle}>
-            Preencha sua viagem com o assistente especialista em viagens. Ele faz as perguntas e o cadastro avança sozinho.
-          </Text>
-        </View>
-        <TravelAssistantChat
-          formSnapshot={formSnapshot}
-          days={form.days.map((d) => ({
-            id: d.id,
-            date: d.date,
-            title: d.title,
-            attachments: d.attachments.map((a) => ({ name: a.name, uri: a.uri, mimeType: a.mimeType })),
-          }))}
-          onFormUpdates={(updates) => setForm((prev) => applyAgentUpdates(prev, updates))}
-          onDone={(finalSnapshot) => {
-            if (finalSnapshot) setForm((prev) => applyAgentUpdates(prev, finalSnapshot));
-            pendingSaveFromAssistant.current = true;
-            setViewMode('form');
-          }}
-          onSwitchToForm={() => setViewMode('form')}
-          onAttachVoucher={(dayId) => void pickAttachment(dayId)}
-          onRemoveAttachment={removeAttachment}
-        />
-      </ScrollView>
-    );
-  }
+  const pickBulkAttachments = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: '*/*',
+      copyToCacheDirectory: true,
+      multiple: true,
+    } as any);
+    if (result.canceled) {
+      return;
+    }
+    const assets = result.assets ?? [];
+    const newAttachments: Attachment[] = [];
+    for (const file of assets) {
+      const savedUri = await copyAttachmentToUpload(file.uri, file.name, 'bulk');
+      const uri = savedUri ?? file.uri;
+      newAttachments.push({
+        name: file.name,
+        uri,
+        mimeType: file.mimeType,
+      });
+    }
+    setBulkAttachments((prev) => [...prev, ...newAttachments]);
+  };
+
+  const removeBulkAttachment = (index: number) => {
+    setBulkAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const generateTripFromAttachments = async () => {
+    if (!bulkAttachments.length) {
+      notify('Sem anexos', 'Adicione ao menos um anexo para gerar a viagem com IA.');
+      return;
+    }
+    if (!hasOpenAIKey()) {
+      notify('Chave da IA ausente', 'Configure EXPO_PUBLIC_OPENAI_API_KEY no .env para usar a IA.');
+      return;
+    }
+    setBulkLoading(true);
+    setAiLogs([]);
+    addLog(`Anexos: ${bulkAttachments.length} arquivo(s)`);
+    try {
+      addLog('Extraindo texto dos anexos...');
+      const text = await extractTextFromAllAttachments(
+        bulkAttachments.map((att) => ({
+          uri: att.uri,
+          name: att.name,
+          mimeType: att.mimeType,
+        })),
+      );
+      addLog(`Texto extraído: ${text.length} caracteres`);
+      addLog(`Preview (início): ${text.slice(0, 400).replace(/\n/g, ' ')}${text.length > 400 ? '...' : ''}`);
+      if (!text.trim()) {
+        addLog('ERRO: texto extraído está vazio');
+        notify('Falha na extração', 'Não foi possível extrair texto dos anexos. Tente anexar PDFs ou arquivos .txt.');
+        setBulkLoading(false);
+        return;
+      }
+
+      const isExtractionError =
+        /\[Erro ao extrair PDF|Failed to fetch|EXPO_PUBLIC_EXTRACT_PDF_API_URL|API está rodando/i.test(text.trim());
+      if (isExtractionError) {
+        addLog('ERRO: o "texto" extraído é uma mensagem de erro da API de PDF, não o conteúdo dos arquivos.');
+        notify(
+          'API de PDF indisponível',
+          'A extração de PDF falhou (Failed to fetch). Verifique se a API está rodando e se EXPO_PUBLIC_EXTRACT_PDF_API_URL no .env está correta. Local: npm run api na porta 3006.',
+        );
+        setBulkLoading(false);
+        return;
+      }
+
+      addLog('Chamando IA para montar roteiro (buildTripFromAttachments)...');
+      const snapshot = await buildTripFromAttachments(text);
+      const daysCount = snapshot.days?.length ?? 0;
+      addLog(`IA retornou: destination="${snapshot.destination ?? ''}", startDate="${snapshot.startDate ?? ''}", endDate="${snapshot.endDate ?? ''}", days.length=${daysCount}`);
+      if (daysCount === 0) {
+        addLog('ERRO: snapshot.days está vazio ou não é array.');
+        addLog(`Resposta bruta (primeiros 600 chars): ${JSON.stringify(snapshot).slice(0, 600)}`);
+        notify('Roteiro vazio', 'A IA não conseguiu montar nenhum dia a partir dos anexos. Veja os logs abaixo.');
+        setBulkLoading(false);
+        return;
+      }
+
+      const daysFromSnapshot =
+        snapshot.days?.map((d, i) => ({
+          id: `ai-day-${Date.now()}-${i}`,
+          date: normalizeDateOnly(d.date) || d.date,
+          type: d.type,
+          title: d.title?.trim() || dayTypeLabel(d.type),
+          time: d.time ?? '',
+          location: d.location ?? '',
+          notes: d.notes ?? '',
+          details: (d.details as DayDetails) ?? {},
+          activities: (d.activities ?? []).map((a, j) => ({
+            id: `ai-activity-${Date.now()}-${i}-${j}`,
+            title: a.title ?? '',
+            time: a.time ?? '',
+            location: a.location ?? '',
+          })),
+          checklistItems: d.checklistItems ?? [],
+          attachments: [],
+        })) ?? [];
+
+      if (!daysFromSnapshot.length) {
+        notify('Roteiro vazio', 'A IA não conseguiu montar nenhum dia a partir dos anexos.');
+        return;
+      }
+
+      const orderedDays = [...daysFromSnapshot].sort((a, b) => a.date.localeCompare(b.date));
+      const startDate =
+        normalizeDateOnly(snapshot.startDate || orderedDays[0]?.date || '') ||
+        (snapshot.startDate || orderedDays[0]?.date || '');
+      const endDate =
+        normalizeDateOnly(snapshot.endDate || orderedDays[orderedDays.length - 1]?.date || '') ||
+        (snapshot.endDate || orderedDays[orderedDays.length - 1]?.date || '');
+
+      const trip: Trip = {
+        id: `${Date.now()}`,
+        destination: snapshot.destination || 'Viagem sem destino',
+        startDate,
+        endDate,
+        days: orderedDays,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      addTrip(trip);
+      addLog('Viagem salva com sucesso.');
+      notify('Sucesso', 'Viagem criada automaticamente a partir dos anexos.');
+      setBulkAttachments([]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addLog(`ERRO: ${msg}`);
+      if (e instanceof Error && e.stack) {
+        addLog(`Stack: ${e.stack.slice(0, 300)}`);
+      }
+      notify('Erro ao gerar viagem com IA', msg);
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   return (
     <ScrollView
@@ -454,11 +557,45 @@ export function CreateTripScreen() {
         </Text>
       </View>
 
-      {hasOpenAIKey() ? (
-        <Pressable style={[styles.assistantChip, webCard]} onPress={() => setViewMode('assistant')}>
-          <Text style={styles.assistantChipText}>Preencher com Assistente IA (especialista em viagens)</Text>
+      <View style={[styles.assistantChip, webCard]}>
+        <Text style={styles.assistantChipText}>Gerar viagem automaticamente a partir de anexos (IA)</Text>
+        <Pressable style={[styles.button, styles.secondary]} onPress={() => void pickBulkAttachments()}>
+          <Text style={styles.primaryText}>Selecionar anexos (PDF/TXT)</Text>
         </Pressable>
-      ) : null}
+        {bulkAttachments.length ? (
+          <View style={styles.attachWrap}>
+            {bulkAttachments.map((att, index) => (
+              <View key={`${att.name}-${index}`} style={styles.attachItem}>
+                <Text style={styles.fileText}>{att.name}</Text>
+                <Pressable onPress={() => removeBulkAttachment(index)}>
+                  <Text style={styles.removeText}>remover</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.fileText}>Nenhum anexo selecionado ainda.</Text>
+        )}
+        <Pressable
+          style={[styles.button, styles.save, bulkLoading && { opacity: 0.7 }]}
+          onPress={() => void generateTripFromAttachments()}
+          disabled={bulkLoading}
+        >
+          <Text style={styles.primaryText}>
+            {bulkLoading ? 'Gerando viagem com IA...' : 'Gerar viagem com IA e salvar'}
+          </Text>
+        </Pressable>
+        {aiLogs.length > 0 ? (
+          <View style={styles.logBox}>
+            <Text style={styles.logTitle}>Log da última geração</Text>
+            <ScrollView style={styles.logScroll} nestedScrollEnabled>
+              <Text style={styles.logText} selectable>
+                {aiLogs.join('\n')}
+              </Text>
+            </ScrollView>
+          </View>
+        ) : null}
+      </View>
 
       <View style={isWebWide ? styles.gridWrap : undefined}>
         <View style={[styles.formCard, isWebWide && styles.formCardWide, webCard]}>
@@ -1129,5 +1266,28 @@ const styles = StyleSheet.create({
     color: '#60A5FA',
     fontWeight: '700',
     fontSize: 14,
+  },
+  logBox: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#2A4778',
+    borderRadius: 10,
+    backgroundColor: '#0A152C',
+    padding: 10,
+    maxHeight: 220,
+  },
+  logTitle: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  logScroll: {
+    maxHeight: 180,
+  },
+  logText: {
+    color: '#A5B4C8',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'web' ? 'monospace' : undefined,
   },
 });

@@ -90,6 +90,128 @@ function buildUserContext(snapshot: TripFormSnapshot): string {
   return parts.length ? `Estado atual do cadastro: ${parts.join('. ')}` : 'Cadastro em branco.';
 }
 
+/** Extrai um objeto JSON de uma string que pode ter texto antes/depois. */
+function extractJsonObject<T>(content: string): T {
+  const trimmed = content.trim();
+  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('Resposta da IA não contém um JSON válido.');
+  }
+  let str = jsonMatch[0];
+  const open = str.indexOf('{');
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < str.length; i++) {
+    if (str[i] === '{') depth++;
+    if (str[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end === -1) {
+    throw new Error('Não foi possível fechar o JSON retornado pela IA.');
+  }
+  str = str.slice(open, end + 1);
+  return JSON.parse(str) as T;
+}
+
+/**
+ * Gera um roteiro completo a partir do texto extraído dos anexos (sem chat, apenas 1 chamada).
+ * Retorna um TripFormSnapshot com destino, datas e days preenchidos.
+ */
+export async function buildTripFromAttachments(extractedText: string): Promise<TripFormSnapshot> {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error(
+      'Configure a chave OPENAI no arquivo .env (EXPO_PUBLIC_OPENAI_API_KEY). Veja .env.example.',
+    );
+  }
+
+  const systemContent = `Você é um ESPECIALISTA em viagens. Recebe TODO o texto extraído de vouchers, e-mails de confirmação e PDFs de uma viagem (voos, hotéis, traslados, passeios, trens, ônibus, etc.).
+
+Sua tarefa é montar um PLANO COMPLETO da viagem em um único JSON no formato TripFormSnapshot, com esta estrutura:
+{
+  "destination": "texto curto com os principais destinos (ex.: Paris, Madrid, Amsterdã)",
+  "startDate": "AAAA-MM-DD ou vazio",
+  "endDate": "AAAA-MM-DD ou vazio",
+  "days": [
+    {
+      "date": "AAAA-MM-DD",
+      "type": "voo" | "hotel" | "atividade" | "logistica",
+      "title": "título curto do dia",
+      "time": "horário principal (opcional)",
+      "location": "local ou cidade (opcional)",
+      "notes": "detalhes importantes (opcional)",
+      "details": { "chave": "valor" },        // ex.: airline, flightNumber, departure, arrival, hotelName, checkIn, CheckOut, transportMode, origin, destination, etc.
+      "activities": [
+        { "title": "atividade", "time": "opcional", "location": "opcional" }
+      ],
+      "checklistItems": ["itens importantes"]
+    }
+  ]
+}
+
+REGRAS IMPORTANTES:
+- Use as informações dos anexos; quando o texto não tiver endereço, use seu conhecimento para preencher (ver abaixo).
+- Crie:
+  • Dias de tipo "voo" para voos de ida/volta (com cia, número, aeroportos, datas em details).
+  • Dias de tipo "hotel": SEMPRE preencha "location" com o ENDEREÇO do hotel. Se o voucher tiver rua, número, CEP, cidade, use esse endereço. Se o voucher só tiver o nome do hotel (ex.: "Hotel ibis Amsterdam Centre"), você DEVE trazer o endereço: use seu conhecimento para colocar o endereço completo ou pelo menos "Nome do hotel, Cidade" (ex.: "Hotel ibis Amsterdam Centre, Stationsplein 49, Amsterdam" ou "Stationsplein 49, 1012 AB Amsterdam"). Nunca deixe hotel sem "location" preenchido.
+  • Dias de tipo "logistica" para traslados, trens, ônibus, transfers (com transportMode, origin, destination).
+  • Dias de tipo "atividade" para passeios, tours, museus, parques, galerias, atrações.
+- ENDEREÇOS E "LUGARES PRÓXIMOS": O app usa o campo "location" (do dia e de cada item em "activities") para mostrar "Lugares próximos" na timeline. Por isso:
+  • Todo dia de hotel: obrigatório ter "location" com endereço do hotel (extraído do voucher ou preenchido por você com endereço conhecido).
+  • Todo passeio/atividade que mencionar um lugar (museu, galeria, parque, torre, tour, ponto turístico): preencha "location" com o endereço ou com "Nome do lugar, Cidade" (ex.: "Torre Eiffel, Paris"; "Museu do Louvre, Paris"; "Toledo Tour, Madrid"). Se no voucher houver endereço ou local, use; senão, preencha com o que você sabe para permitir geolocalização e exibição de "Lugares próximos" na tela.
+  • Se em qualquer parte do texto dos anexos aparecer um endereço (rua, número, bairro, cidade, CEP), use esse endereço no "location" do dia ou da atividade correspondente.
+- Datas: formate em AAAA-MM-DD (ex.: 17/03/26 → 2026-03-17).
+- Se não conseguir inferir startDate/endDate, deixe vazio.
+- Responda SOMENTE com UM JSON válido, sem markdown, sem texto antes ou depois.`;
+
+  const body = {
+    model: MODEL,
+    messages: [
+      { role: 'system', content: systemContent },
+      {
+        role: 'user',
+        content: `TEXTO EXTRAÍDO DOS ANEXOS (use tudo que for relevante para montar o JSON TripFormSnapshot):\n\n${extractedText}`,
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 1600,
+  };
+
+  const res = await fetch(OPENAI_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Erro na API: ${res.status}. ${err.slice(0, 200)}`);
+  }
+
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error('Resposta vazia do assistente ao montar o roteiro a partir dos anexos.');
+  }
+
+  try {
+    return extractJsonObject<TripFormSnapshot>(content);
+  } catch (parseErr) {
+    const detail = parseErr instanceof Error ? parseErr.message : String(parseErr);
+    throw new Error(
+      `A IA não retornou um JSON válido (TripFormSnapshot). ${detail}. Resposta bruta (500 primeiros chars): ${content.slice(0, 500)}`,
+    );
+  }
+}
+
 /** Extrai o conteúdo dos anexos da última mensagem do usuário que o contiver (memória do chat). */
 function getAttachmentMemory(messages: Array<{ role: string; content: string }>): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -170,27 +292,8 @@ export async function sendToTravelAgent(
 
 /** Extrai o objeto JSON da resposta mesmo com texto antes/depois (ex: "Aqui está: {...}"). */
 function parseAgentResponse(content: string): AgentResponse | null {
-  const trimmed = content.trim();
-  const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  let str = jsonMatch[0];
-  const open = str.indexOf('{');
-  let depth = 0;
-  let end = -1;
-  for (let i = open; i < str.length; i++) {
-    if (str[i] === '{') depth++;
-    if (str[i] === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (end === -1) return null;
-  str = str.slice(open, end + 1);
   try {
-    return JSON.parse(str) as AgentResponse;
+    return extractJsonObject<AgentResponse>(content);
   } catch {
     return null;
   }
